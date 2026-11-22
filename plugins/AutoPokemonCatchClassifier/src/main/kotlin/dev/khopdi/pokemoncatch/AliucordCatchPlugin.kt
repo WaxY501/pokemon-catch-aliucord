@@ -12,13 +12,11 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
-import com.aliucord.api.SettingsAPI
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.aliucord.views.Button
 import com.aliucord.views.TextInput
 import com.aliucord.widgets.BottomSheet
-import com.discord.models.message.Message
 import com.discord.stores.StoreMessages
 import com.discord.widgets.chat.input.ChatInputViewModel
 import org.json.JSONObject
@@ -286,27 +284,41 @@ class OnnxClassifier(context: Context) {
         val scaled = Bitmap.createScaledBitmap(bmp, 224, 224, true)
         val tensor = bitmapToTensor(scaled)
 
-        tensor.use { t ->
+        try {
             val inputName = mainSession.inputNames.first()
-            mainSession.run(mapOf(inputName to t)).use { res ->
+            val res = mainSession.run(mapOf(inputName to tensor))
+            val mIdx: Int
+            val mConf: Float
+            try {
                 val logits = (res[0].value as Array<FloatArray>)[0]
-                val (mIdx, mConf) = softmaxTop1(logits)
-                if (mConf >= fallbackThreshold) {
-                    return if (mConf >= mainAccept) Result("main", mIdx, mConf) else null
-                }
-                val kSess = kratosSession
-                if (kSess != null) {
-                    val kName = kSess.inputNames.first()
-                    kSess.run(mapOf(kName to t)).use { kRes ->
-                        val kLogits = (kRes[0].value as Array<FloatArray>)[0]
-                        val (kIdx, kConf) = softmaxTop1(kLogits)
-                        if (kConf >= kratosAccept && kConf > mConf) {
-                            return Result("kratos", kIdx, kConf)
-                        }
-                    }
-                }
+                val pair = softmaxTop1(logits)
+                mIdx = pair.first
+                mConf = pair.second
+            } finally {
+                res.close()
+            }
+
+            if (mConf >= fallbackThreshold) {
                 return if (mConf >= mainAccept) Result("main", mIdx, mConf) else null
             }
+
+            val kSess = kratosSession
+            if (kSess != null) {
+                val kName = kSess.inputNames.first()
+                val kRes = kSess.run(mapOf(kName to tensor))
+                try {
+                    val kLogits = (kRes[0].value as Array<FloatArray>)[0]
+                    val (kIdx, kConf) = softmaxTop1(kLogits)
+                    if (kConf >= kratosAccept && kConf > mConf) {
+                        return Result("kratos", kIdx, kConf)
+                    }
+                } finally {
+                    kRes.close()
+                }
+            }
+            return if (mConf >= mainAccept) Result("main", mIdx, mConf) else null
+        } finally {
+            tensor.close()
         }
     }
 
