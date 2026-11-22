@@ -320,9 +320,15 @@ class OnnxClassifier(context: Context) {
                 src.copyTo(dst, overwrite = true)
             }
         }
-        System.setProperty("onnxruntime.native.path", privNative.absolutePath)
         System.load(File(privNative, "libonnxruntime.so").absolutePath)
         System.load(File(privNative, "libonnxruntime4j_jni.so").absolutePath)
+
+        try {
+            val ortCls = Class.forName("ai.onnxruntime.OnnxRuntime")
+            val loadedField = ortCls.getDeclaredField("loaded")
+            loadedField.isAccessible = true
+            loadedField.setBoolean(null, true)
+        } catch (_: Throwable) {}
 
         val sdModels = File(AliucordCatchPlugin.BASE_DIR, "models")
         val mainModel = File(sdModels, "model.onnx")
