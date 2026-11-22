@@ -50,13 +50,16 @@ class AliucordCatchPlugin : Plugin() {
     }
 
     override fun start(context: Context) {
-        names = NameTables.load(context)
+        statusMessage = "Loading data & ONNX..."
         executor.execute {
             try {
+                names = NameTables.load()
                 classifier = OnnxClassifier(context)
-                log.info("ONNX models loaded successfully")
+                statusMessage = "Ready (ONNX + ${names?.count() ?: 0} classes)"
+                log.info(statusMessage)
             } catch (t: Throwable) {
-                log.error("Failed to load ONNX models", t)
+                statusMessage = "Error: ${t.message ?: t.javaClass.simpleName}"
+                log.error("Failed to initialize PokemonCatch", t)
             }
         }
 
@@ -187,6 +190,8 @@ class AliucordCatchPlugin : Plugin() {
 
     companion object {
         const val POKETWO_ID = 716390085896962058L
+        val BASE_DIR = File("/sdcard/Aliucord/pokemoncatch")
+        @Volatile var statusMessage: String = "Not started"
     }
 }
 
@@ -206,6 +211,12 @@ class PluginSettings : BottomSheet() {
             textSize = 18f
         }
         layout.addView(title)
+
+        val statusView = TextView(ctx).apply {
+            text = "Status: ${AliucordCatchPlugin.statusMessage}"
+            setPadding(0, 8, 0, 16)
+        }
+        layout.addView(statusView)
 
         val templateInput = TextInput(ctx, "Catch command template").apply {
             editText.setText(settings.getString("template", "<@716390085896962058> c {pokemon}"))
@@ -250,6 +261,8 @@ class NameTables(
     private val aliases: JSONObject,
     private val rawNames: Set<String>
 ) {
+    fun count(): Int = classes.size
+
     fun resolve(source: String, idx: Int, naming: String): String? {
         val list = if (source == "main") classes else kratos
         val jpnList = if (source == "main") jpn else kratosJpn
@@ -272,15 +285,17 @@ class NameTables(
     }
 
     companion object {
-        fun load(context: Context): NameTables {
-            fun readLines(asset: String): List<String> =
-                context.assets.open("data/$asset").bufferedReader().readLines().map { it.trim() }.filter { it.isNotEmpty() }
+        fun load(): NameTables {
+            val dataDir = File(AliucordCatchPlugin.BASE_DIR, "data")
+            if (!dataDir.exists()) error("Missing folder: ${dataDir.absolutePath}")
+            fun readLines(name: String): List<String> =
+                File(dataDir, name).readLines().map { it.trim() }.filter { it.isNotEmpty() }
 
             val classes = readLines("classes.txt")
             val jpn = readLines("jpn_classes.txt")
             val kratos = readLines("kratos_classes.txt")
             val kratosJpn = readLines("kratosjpn_classes.txt")
-            val aliasesJson = context.assets.open("data/aliases.json").bufferedReader().readText()
+            val aliasesJson = File(dataDir, "aliases.json").readText()
             val rawSet = (classes + kratos).map { it.lowercase() }.toSet()
             return NameTables(classes, jpn, kratos, kratosJpn, JSONObject(aliasesJson), rawSet)
         }
@@ -290,23 +305,32 @@ class NameTables(
 class OnnxClassifier(context: Context) {
     data class Result(val source: String, val idx: Int, val conf: Float)
 
-    private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val env: OrtEnvironment
     private val mainSession: OrtSession
     private val kratosSession: OrtSession?
 
     init {
-        val modelDir = File(context.filesDir, "pokemoncatch_models").apply { mkdirs() }
-        val files = listOf("model.onnx", "model.onnx.data", "kratos_model.onnx", "kratos_model.onnx.data")
-        for (name in files) {
-            val out = File(modelDir, name)
-            if (!out.exists()) {
-                context.assets.open("models/$name").use { input ->
-                    out.outputStream().use { output -> input.copyTo(output) }
-                }
+        val sdNative = File(AliucordCatchPlugin.BASE_DIR, "native/arm64-v8a")
+        val privNative = File(context.filesDir, "pokemoncatch_native").apply { mkdirs() }
+        for (lib in listOf("libonnxruntime.so", "libonnxruntime4j_jni.so")) {
+            val src = File(sdNative, lib)
+            if (!src.exists()) error("Missing native lib: ${src.absolutePath}")
+            val dst = File(privNative, lib)
+            if (!dst.exists() || dst.length() != src.length()) {
+                src.copyTo(dst, overwrite = true)
             }
         }
-        mainSession = env.createSession(File(modelDir, "model.onnx").absolutePath, OrtSession.SessionOptions())
-        val kratosFile = File(modelDir, "kratos_model.onnx")
+        System.setProperty("onnxruntime.native.path", privNative.absolutePath)
+        System.load(File(privNative, "libonnxruntime.so").absolutePath)
+        System.load(File(privNative, "libonnxruntime4j_jni.so").absolutePath)
+
+        val sdModels = File(AliucordCatchPlugin.BASE_DIR, "models")
+        val mainModel = File(sdModels, "model.onnx")
+        if (!mainModel.exists()) error("Missing model: ${mainModel.absolutePath}")
+
+        env = OrtEnvironment.getEnvironment()
+        mainSession = env.createSession(mainModel.absolutePath, OrtSession.SessionOptions())
+        val kratosFile = File(sdModels, "kratos_model.onnx")
         kratosSession = if (kratosFile.exists()) env.createSession(kratosFile.absolutePath, OrtSession.SessionOptions()) else null
     }
 
