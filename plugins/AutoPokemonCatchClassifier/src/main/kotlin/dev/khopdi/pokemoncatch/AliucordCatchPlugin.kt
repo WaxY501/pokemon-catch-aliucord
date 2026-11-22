@@ -17,6 +17,7 @@ import com.aliucord.patcher.Hook
 import com.aliucord.views.Button
 import com.aliucord.views.TextInput
 import com.aliucord.widgets.BottomSheet
+import com.discord.models.message.Message
 import com.discord.stores.StoreMessages
 import com.discord.widgets.chat.input.ChatInputViewModel
 import org.json.JSONObject
@@ -65,19 +66,20 @@ class AliucordCatchPlugin : Plugin() {
             Hook { param ->
                 if (!settings.getBool("enabled", true)) return@Hook
                 val rawMsg = param.args[0] as? com.discord.api.message.Message ?: return@Hook
-                val author = rawMsg.e() ?: return@Hook
-                if (author.i() != POKETWO_ID) return@Hook
+                val msg = Message(rawMsg)
+                if (msg.author?.id != POKETWO_ID) return@Hook
 
-                val embeds = rawMsg.j() ?: return@Hook
-                val firstEmbed = embeds.firstOrNull() ?: return@Hook
-                val title = firstEmbed.k()?.lowercase() ?: ""
+                val embeds = msg.embeds ?: return@Hook
+                if (embeds.isEmpty()) return@Hook
+                val firstEmbed = embeds[0]
+                val title = firstEmbed.title?.lowercase() ?: ""
                 if (!title.contains("wild pokémon has appeared") && !title.contains("has appeared!")) {
                     return@Hook
                 }
 
-                val imageUrl = firstEmbed.d()?.a() ?: firstEmbed.j()?.a() ?: return@Hook
-                val channelId = rawMsg.g()
-                val messageId = rawMsg.o()
+                val imageUrl = firstEmbed.image?.url ?: firstEmbed.thumbnail?.url ?: return@Hook
+                val channelId = msg.channelId
+                val messageId = msg.id
 
                 executor.execute {
                     val clf = classifier ?: return@execute
