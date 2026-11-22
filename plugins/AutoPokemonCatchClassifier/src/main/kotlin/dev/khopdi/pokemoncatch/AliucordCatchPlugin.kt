@@ -17,7 +17,6 @@ import com.aliucord.patcher.Hook
 import com.aliucord.views.Button
 import com.aliucord.views.TextInput
 import com.aliucord.widgets.BottomSheet
-import com.discord.models.message.Message
 import com.discord.stores.StoreMessages
 import com.discord.widgets.chat.input.ChatInputViewModel
 import org.json.JSONObject
@@ -65,21 +64,36 @@ class AliucordCatchPlugin : Plugin() {
             StoreMessages::class.java.getDeclaredMethod("handleMessageCreate", com.discord.api.message.Message::class.java),
             Hook { param ->
                 if (!settings.getBool("enabled", true)) return@Hook
-                val rawMsg = param.args[0] as? com.discord.api.message.Message ?: return@Hook
-                val msg = Message(rawMsg)
-                if (msg.author?.id != POKETWO_ID) return@Hook
+                val rawMsg = param.args[0] ?: return@Hook
+                val msg = try {
+                    com.discord.models.message.Message::class.java
+                        .getConstructor(com.discord.api.message.Message::class.java)
+                        .newInstance(rawMsg)
+                } catch (_: Throwable) {
+                    rawMsg
+                }
 
-                val embeds = msg.embeds ?: return@Hook
+                val authorObj = reflectProp(msg, "getAuthor", "author") ?: return@Hook
+                val authorId = (reflectProp(authorObj, "getId", "id") as? Number)?.toLong() ?: return@Hook
+                if (authorId != POKETWO_ID) return@Hook
+
+                val embeds = reflectProp(msg, "getEmbeds", "embeds") as? List<*> ?: return@Hook
                 if (embeds.isEmpty()) return@Hook
-                val firstEmbed = embeds[0]
-                val title = firstEmbed.title?.lowercase() ?: ""
+                val firstEmbed = embeds[0] ?: return@Hook
+                val title = (reflectProp(firstEmbed, "getTitle", "title") as? String)?.lowercase() ?: ""
                 if (!title.contains("wild pokémon has appeared") && !title.contains("has appeared!")) {
                     return@Hook
                 }
 
-                val imageUrl = firstEmbed.image?.url ?: firstEmbed.thumbnail?.url ?: return@Hook
-                val channelId = msg.channelId
-                val messageId = msg.id
+                val imageObj = reflectProp(firstEmbed, "getImage", "image")
+                    ?: reflectProp(firstEmbed, "getThumbnail", "thumbnail")
+                    ?: return@Hook
+                val imageUrl = (reflectProp(imageObj, "getUrl", "url") as? String)
+                    ?: (reflectProp(imageObj, "getProxyUrl", "proxyUrl") as? String)
+                    ?: return@Hook
+
+                val channelId = (reflectProp(msg, "getChannelId", "channelId") as? Number)?.toLong() ?: return@Hook
+                val messageId = (reflectProp(msg, "getId", "id") as? Number)?.toLong() ?: 0L
 
                 executor.execute {
                     val clf = classifier ?: return@execute
@@ -109,9 +123,8 @@ class AliucordCatchPlugin : Plugin() {
             ),
             Hook { param ->
                 if (!settings.getBool("enabled", true)) return@Hook
-                val vm = param.thisObject as? ChatInputViewModel ?: return@Hook
                 val content = param.args[2] as? String ?: return@Hook
-                val channelId = getSelectedChannelId(vm) ?: return@Hook
+                val channelId = getSelectedChannelId() ?: return@Hook
 
                 val pred = cache[channelId] ?: return@Hook
                 if (pred.used || System.currentTimeMillis() - pred.createdAt > 600_000L) return@Hook
@@ -138,7 +151,24 @@ class AliucordCatchPlugin : Plugin() {
         classifier = null
     }
 
-    private fun getSelectedChannelId(vm: ChatInputViewModel): Long? {
+    private fun reflectProp(obj: Any, methodName: String, fieldName: String): Any? {
+        try {
+            return obj.javaClass.getMethod(methodName).invoke(obj)
+        } catch (_: Throwable) {}
+        var cls: Class<*>? = obj.javaClass
+        while (cls != null) {
+            try {
+                val f = cls.getDeclaredField(fieldName)
+                f.isAccessible = true
+                return f.get(obj)
+            } catch (_: Throwable) {
+                cls = cls.superclass
+            }
+        }
+        return null
+    }
+
+    private fun getSelectedChannelId(): Long? {
         return try {
             com.discord.stores.StoreStream.getChannelsSelected().id
         } catch (_: Throwable) {
